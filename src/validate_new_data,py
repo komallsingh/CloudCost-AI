@@ -1,0 +1,103 @@
+from pathlib import Path
+import json
+import joblib
+import pandas as pd
+
+from sklearn.metrics import (
+    mean_absolute_error,
+    mean_squared_error,
+    r2_score
+)
+
+from src.preprocessing import create_features, FEATURES, TARGET
+
+ROOT_DIR = Path(__file__).resolve().parent.parent
+
+NEW_DATA_PATH = ROOT_DIR / "data" / "incoming" / "new_cpu_batch.csv"
+CHAMPION_PATH = ROOT_DIR / "models" / "champion.joblib"
+REPORT_DIR = ROOT_DIR / "reports"
+
+REPORT_PATH = REPORT_DIR / "monitoring_report.json"
+
+
+def calculate_metrics(y_true, predictions):
+    return {
+        "MAE": float(mean_absolute_error(y_true, predictions)),
+        "RMSE": float(mean_squared_error(y_true, predictions) ** 0.5),
+        "R2": float(r2_score(y_true, predictions))
+    }
+
+
+def monitor_model():
+    REPORT_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Load incoming labelled data
+    data = pd.read_csv(NEW_DATA_PATH)
+
+    required_columns = ["vm_id", "timestamp", "avg_cpu"]
+
+    # Validate required columns
+    missing_columns = [
+        col for col in required_columns if col not in data.columns
+    ]
+
+    if missing_columns:
+        raise ValueError(f"Missing columns: {missing_columns}")
+
+    if data[required_columns].isnull().any().any():
+        raise ValueError("Missing values found in incoming data")
+
+    if data.duplicated(["vm_id", "timestamp"]).any():
+        raise ValueError("Duplicate VM timestamp records found")
+
+    data["timestamp"] = pd.to_numeric(data["timestamp"], errors="raise")
+    data["avg_cpu"] = pd.to_numeric(data["avg_cpu"], errors="raise")
+
+    if not data["avg_cpu"].between(0, 100).all():
+        raise ValueError("CPU values must be between 0 and 100")
+
+    # Display incoming data information
+    print("\nINCOMING DATA")
+    print("-" * 40)
+    print("Records:", len(data))
+    print("Columns:", len(data.columns))
+    print(data["avg_cpu"].describe())
+
+    # Apply existing feature engineering
+    featured_data = create_features(data)
+
+    X = featured_data[FEATURES]
+    y = featured_data[TARGET]
+
+    # Load champion model
+    champion = joblib.load(CHAMPION_PATH)
+
+    # Generate predictions
+    predictions = champion.predict(X)
+
+    # Calculate metrics
+    metrics = calculate_metrics(y, predictions)
+
+    report = {
+        "model": "Champion",
+        "records_evaluated": int(len(y)),
+        "metrics": metrics
+    }
+
+    # Save report
+    with open(REPORT_PATH, "w") as f:
+        json.dump(report, f, indent=4)
+
+    print("\nMODEL MONITORING")
+    print("-" * 40)
+
+    for metric, value in metrics.items():
+        print(f"{metric}: {value:.4f}")
+
+    print("\nReport saved:", REPORT_PATH)
+
+    return report
+
+
+if __name__ == "__main__":
+    monitor_model()
